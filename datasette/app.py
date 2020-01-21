@@ -168,11 +168,15 @@ class Datasette:
         for file in self.files:
             path = file
             is_memory = False
+            is_parquet = False
             if file is MEMORY:
                 path = None
                 is_memory = True
+            if Path(file).suffix == '.parquet':
+                is_memory = True
+                is_parquet = True
             is_mutable = path not in self.immutables
-            db = Database(self, path, is_mutable=is_mutable, is_memory=is_memory)
+            db = Database(self, path, is_mutable=is_mutable, is_memory=is_memory, is_parquet=is_parquet)
             if db.name in self.databases:
                 raise Exception("Multiple files with same stem: {}".format(db.name))
             self.databases[db.name] = db
@@ -208,6 +212,22 @@ class Datasette:
     async def run_sanity_checks(self):
         # Only one check right now, for Spatialite
         for database_name, database in self.databases.items():
+            # Check every database, not every table   
+            try:
+                if database.is_parquet:
+                    conn = sqlite3.connect(":memory:")
+                    self.prepare_connection(conn)
+                    conn.execute("CREATE VIRTUAL TABLE {} USING parquet('{}')".format(escape_sqlite(database_name), database.path))
+            except sqlite3.OperationalError as e:
+                if e.args[0] == "no such module: parquet":
+                    raise click.UsageError(
+                        "It looks like you're trying to load a Parquet file"
+                        " without first loading the Parquet module."
+                        "\n\nRead more: https://github.com/cldellow/sqlite-parquet-vtable"
+                    )
+                else:
+                    raise
+            
             # Run pragma_info on every table
             for table in await database.table_names():
                 try:
@@ -224,6 +244,7 @@ class Datasette:
                         )
                     else:
                         raise
+            
 
     def config(self, key):
         return self._config.get(key, None)
@@ -335,7 +356,7 @@ class Datasette:
             for extension in self.sqlite_extensions:
                 conn.execute("SELECT load_extension('{}')".format(extension))
         if self.config("cache_size_kb"):
-            conn.execute("PRAGMA cache_size=-{}".format(self.config("cache_size_kb")))
+            conn.execute("PRAGMA cache_size=-{}".format(self.config("cache_size_kb")))  
         # pylint: disable=no-member
         pm.hook.prepare_connection(conn=conn)
 

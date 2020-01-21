@@ -14,6 +14,7 @@ from .utils import (
     get_outbound_foreign_keys,
     sqlite_timelimit,
     sqlite3,
+    escape_sqlite,
     table_columns,
 )
 from .inspect import inspect_hash
@@ -22,11 +23,12 @@ connections = threading.local()
 
 
 class Database:
-    def __init__(self, ds, path=None, is_mutable=False, is_memory=False):
+    def __init__(self, ds, path=None, is_mutable=False, is_memory=False, is_parquet=False):
         self.ds = ds
         self.path = path
         self.is_mutable = is_mutable
         self.is_memory = is_memory
+        self.is_parquet = is_parquet
         self.hash = None
         self.cached_size = None
         self.cached_table_counts = None
@@ -42,7 +44,7 @@ class Database:
                 }
 
     def connect(self):
-        if self.is_memory:
+        if self.is_memory or self.is_parquet:
             return sqlite3.connect(":memory:")
         # mode=ro or immutable=1?
         if self.is_mutable:
@@ -59,6 +61,8 @@ class Database:
             if not conn:
                 conn = self.connect()
                 self.ds.prepare_connection(conn)
+                if self.is_parquet:
+                    conn.execute("CREATE VIRTUAL TABLE {} USING parquet('{}')".format(escape_sqlite(self.name), self.path))
                 setattr(connections, self.name, conn)
             return fn(conn)
 
@@ -157,6 +161,8 @@ class Database:
 
     @property
     def name(self):
+        if self.is_parquet:
+            return Path(self.path).stem
         if self.is_memory:
             return ":memory:"
         else:
